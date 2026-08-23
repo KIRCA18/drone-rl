@@ -14,6 +14,19 @@ env/
 ppo_hover_model/
 models/
 
+# RLlib/Ray Tune bulky generated outputs
+experiments/results/*/
+!experiments/results/*.csv
+checkpoint_*/
+result.json
+progress.csv
+params.json
+params.pkl
+events.out.tfevents.*
+
+# Editable dependency clones installed by pip
+src/gym-pybullet-drones/
+
 # IDEs & Editors
 .vscode/
 .idea/

@@ -1,0 +1,6 @@
+trial,iterations,timesteps,best_reward,final_reward,final_episode_length,path
+"sac_hover_baseline_baseline_[256, 256]_SAC_DroneHover-v0_dc976_00000_0_2026-08-23_14-33-36",991,100002,471.8185350520492,468.48849056597305,240.14,experiments\results\sac_hover_baseline\SAC_DroneHover-v0_dc976_00000_0_2026-08-23_14-33-36
+"ppo_hover_baseline_baseline_[256, 256]_PPO_DroneHover-v0_fb46c_00000_0_2026-08-23_13-44-22",25,100000,434.6690672733872,423.17459511097127,226.85,experiments\results\ppo_hover_baseline\PPO_DroneHover-v0_fb46c_00000_0_2026-08-23_13-44-22
+"sac_hover_smoke_replay_baseline_[256, 256]_SAC_DroneHover-v0_19739_00000_0_2026-08-23_14-28-09",8,1109,340.10869700601364,340.10869700601364,218.4,experiments\results\sac_hover_smoke_replay\SAC_DroneHover-v0_19739_00000_0_2026-08-23_14-28-09
+"ppo_hover_smoke_flat_baseline_[256, 256]_PPO_DroneHover-v0_c283e_00000_0_2026-08-23_13-35-37",1,4000,328.6998642084797,328.6998642084797,214.66666666666666,experiments\results\ppo_hover_smoke_flat\PPO_DroneHover-v0_c283e_00000_0_2026-08-23_13-35-37
+"ppo_hover_baseline_baseline_[256, 256]_PPO_DroneHover-v0_64b7f_00000_0_2026-08-23_14-01-38",25,100000,439.10797938303966,318.89027546359307,177.9,experiments\results\ppo_hover_baseline\PPO_DroneHover-v0_64b7f_00000_0_2026-08-23_14-01-38

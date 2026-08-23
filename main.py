@@ -2,12 +2,12 @@ import time
 import typer
 from enum import Enum
 
-from stable_baselines3 import PPO, SAC, TD3
-from stable_baselines3.common.env_util import make_vec_env
-from gym_pybullet_drones.envs.HoverAviary import HoverAviary
-from gym_pybullet_drones.utils.enums import ObservationType, ActionType
+from analyze_rllib_results import app as rllib_results_app
+from rllib_train import app as rllib_app
 
 app = typer.Typer(help="Drone RL Comparative Analysis CLI")
+app.add_typer(rllib_app, name="rllib", help="Train and compare Ray RLlib experiments.")
+app.add_typer(rllib_results_app, name="rllib-results", help="Summarize Ray Tune/RLlib results.")
 
 
 
@@ -19,6 +19,8 @@ class Algorithm(str, Enum):
 
 def get_algo_class(algo_name: Algorithm):
     """Helper function to map the string input to the actual SB3 class."""
+    from stable_baselines3 import PPO, SAC, TD3
+
     if algo_name == Algorithm.ppo:
         return PPO
     elif algo_name == Algorithm.sac:
@@ -35,6 +37,10 @@ def train(
         envs: int = typer.Option(4, "--envs", "-e", help="Number of parallel environments (SAC and TD3 are heavier and prefer single envs)")
 ):
     """Train a drone policy and save it to disk."""
+    from stable_baselines3.common.env_util import make_vec_env
+    from gym_pybullet_drones.envs.HoverAviary import HoverAviary
+    from gym_pybullet_drones.utils.enums import ActionType, ObservationType
+
     if not output.endswith(".zip"):
         output += ".zip"
 
@@ -62,6 +68,9 @@ def render(
         model_path: str = typer.Option(..., "--model", "-m", help="Path to the saved model (without .zip)")
 ):
     """Load a saved model and render it visually in PyBullet."""
+    from gym_pybullet_drones.envs.HoverAviary import HoverAviary
+    from gym_pybullet_drones.utils.enums import ActionType, ObservationType
+
     if not model_path.endswith(".zip"):
         model_path += ".zip"
     typer.echo(f"--- Loading {algo.value} model from {model_path} ---")

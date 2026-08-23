@@ -1,0 +1,2 @@
+trial,iterations,timesteps,best_reward,final_reward,final_episode_length,path
+"ppo_hover_smoke_flat_baseline_[256, 256]_PPO_DroneHover-v0_c283e_00000_0_2026-08-23_13-35-37",1,4000,328.6998642084797,328.6998642084797,214.66666666666666,experiments\results\ppo_hover_smoke_flat\PPO_DroneHover-v0_c283e_00000_0_2026-08-23_13-35-37

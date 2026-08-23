@@ -12,14 +12,22 @@
 
 ## 📋 Table of Contents
 * [📌 Project Overview](#-project-overview)
+* [🧪 RLlib Experiment Plan](#-rllib-experiment-plan)
 * [🚀 Installation & Setup](#-installation--setup)
 * [💻 CLI Usage (How to Run)](#-cli-usage-how-to-run)
+* [🧠 RLlib Experiments](#-rllib-experiments)
 
 ---
 
 ## 📌 Project Overview
 
 > **[🚧 Work in Progress]**
+---
+
+## 🧪 RLlib Experiment Plan
+
+The comparative experiment design is documented in [RLIB_EXPERIMENT_PLAN.md](RLIB_EXPERIMENT_PLAN.md). It includes algorithm comparisons, scenario/subset comparisons, hyperparameter optimization, neural network architecture combinations, RLlib configuration ideas, and evaluation metrics.
+
 ---
 
 ## 🚀 Installation & Setup
@@ -31,7 +39,7 @@ cd drone-rl
 ```
 
 ### 2. Install Core Dependencies
-Install the required packages, including `typer` for the CLI and `setuptools<82` (required to bypass legacy packaging issues in PyBullet):
+Install the required packages, including `typer` for the CLI, Ray RLlib, and PyBullet:
 ```bash
 pip install -r requirements.txt
 ```
@@ -69,3 +77,39 @@ Runs a training session and immediately launches the PyBullet visualizer upon co
 # Run a quick 100k-step test with TD3
 python main.py train-and-render --algo TD3 --steps 100000
 ```
+
+---
+
+## 🧠 RLlib Experiments
+
+The project includes a Ray RLlib implementation for algorithm comparison, scenario comparison, hyperparameter sweeps, and result analysis.
+
+You can run RLlib through the main CLI:
+```bash
+python main.py rllib --help
+```
+
+### Train one RLlib experiment
+```bash
+# Quick smoke test
+python main.py rllib train --config rllib_configs/ppo_hover.json --steps 1000 --no-sweep
+
+# Longer PPO training run
+python main.py rllib train --config rllib_configs/ppo_hover.json --steps 100000
+```
+
+### Compare all configured algorithms across seeds
+```bash
+python main.py rllib compare --config-dir rllib_configs --steps 100000 --seeds 0,1,2
+```
+
+### Analyze Ray Tune results
+```bash
+python main.py rllib-results summarize
+```
+
+Outputs are written to:
+
+* `experiments/results/`
+* `experiments/plots/`
+* `reports/algorithm_comparison.md`
