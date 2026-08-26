@@ -1,5 +1,6 @@
 import csv
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +9,9 @@ import typer
 app = typer.Typer(help="Summarize and plot RLlib/Ray Tune Drone-RL experiment results.")
 
 DEFAULT_RESULTS_DIR = Path("experiments/results")
-DEFAULT_REPORT_PATH = Path("reports/algorithm_comparison.md")
-DEFAULT_SUMMARY_PATH = Path("experiments/results/summary.csv")
-DEFAULT_PLOT_PATH = Path("experiments/plots/reward_comparison.png")
+DEFAULT_REPORT_DIR = Path("reports")
+DEFAULT_SUMMARY_DIR = Path("experiments/results")
+DEFAULT_PLOT_DIR = Path("experiments/plots")
 
 
 def parse_number(value: str | None) -> float | None:
@@ -162,11 +163,20 @@ def write_reward_plot(trials: list[dict[str, Any]], plot_path: Path) -> None:
 @app.command()
 def summarize(
     results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir", help="Ray Tune results directory."),
-    summary_path: Path = typer.Option(DEFAULT_SUMMARY_PATH, "--summary", help="Output CSV summary path."),
-    report_path: Path = typer.Option(DEFAULT_REPORT_PATH, "--report", help="Output Markdown report path."),
-    plot_path: Path = typer.Option(DEFAULT_PLOT_PATH, "--plot", help="Output reward plot path."),
+    summary_path: Path | None = typer.Option(None, "--summary", help="Output CSV summary path. Defaults to a timestamped file so old runs aren't overwritten."),
+    report_path: Path | None = typer.Option(None, "--report", help="Output Markdown report path. Defaults to a timestamped file so old runs aren't overwritten."),
+    plot_path: Path | None = typer.Option(None, "--plot", help="Output reward plot path. Defaults to a timestamped file so old runs aren't overwritten."),
 ):
     """Create a CSV, Markdown report, and reward curve plot from Ray Tune results."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if summary_path is None:
+        summary_path = DEFAULT_SUMMARY_DIR / f"summary_{timestamp}.csv"
+    if report_path is None:
+        report_path = DEFAULT_REPORT_DIR / f"algorithm_comparison_{timestamp}.md"
+    if plot_path is None:
+        plot_path = DEFAULT_PLOT_DIR / f"reward_comparison_{timestamp}.png"
+
     trials = collect_trials(results_dir)
     if not trials:
         raise typer.BadParameter(f"No completed Ray Tune progress.csv files with reward metrics found in {results_dir}")

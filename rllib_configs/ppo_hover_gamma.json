@@ -1,0 +1,60 @@
+{
+  "name": "ppo_hover_gamma_sweep",
+  "algorithm": "PPO",
+  "framework": "torch",
+  "stop_metric": "num_env_steps_sampled_lifetime",
+  "api_stack": {
+    "enable_rl_module_and_learner": false,
+    "enable_env_runner_and_connector_v2": false
+  },
+  "stop": {
+    "timesteps_total": 1000000
+  },
+  "checkpoint_frequency": 10,
+  "env_config": {
+    "scenario": "baseline",
+    "obs": "kin",
+    "act": "one_d_rpm",
+    "gui": false,
+    "observation_noise_std": 0.0
+  },
+  "env_runners": {
+    "num_env_runners": 0,
+    "num_envs_per_env_runner": 1
+  },
+  "training": {
+    "lr": 0.0003,
+    "gamma": 0.99,
+    "lambda_": 0.95,
+    "clip_param": 0.2,
+    "entropy_coeff": 0.0,
+    "vf_loss_coeff": 1.0,
+    "train_batch_size": 4000,
+    "minibatch_size": 128,
+    "num_epochs": 10
+  },
+  "model": {
+    "fcnet_hiddens": [
+      256,
+      256
+    ],
+    "fcnet_activation": "tanh"
+  },
+  "evaluation": {
+    "evaluation_interval": 5,
+    "evaluation_duration": 5,
+    "evaluation_config": {
+      "explore": false
+    }
+  },
+  "sweep": {
+    "training.gamma": [
+      0.95,
+      0.99,
+      0.995
+    ]
+  },
+  "resources": {
+    "num_gpus": 0.25
+  }
+}
