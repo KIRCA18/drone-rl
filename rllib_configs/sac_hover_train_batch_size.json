@@ -1,0 +1,65 @@
+{
+  "name": "sac_hover_train_batch_size_sweep",
+  "algorithm": "SAC",
+  "framework": "torch",
+  "stop_metric": "num_env_steps_sampled_lifetime",
+  "api_stack": {
+    "enable_rl_module_and_learner": false,
+    "enable_env_runner_and_connector_v2": false
+  },
+  "stop": {
+    "timesteps_total": 1000000
+  },
+  "checkpoint_frequency": 10,
+  "env_config": {
+    "scenario": "baseline",
+    "obs": "kin",
+    "act": "one_d_rpm",
+    "gui": false,
+    "observation_noise_std": 0.0
+  },
+  "env_runners": {
+    "num_env_runners": 0,
+    "num_envs_per_env_runner": 1
+  },
+  "training": {
+    "lr": 0.0003,
+    "gamma": 0.99,
+    "tau": 0.005,
+    "train_batch_size": 256,
+    "n_step": 1,
+    "target_entropy": "auto",
+    "initial_alpha": 1.0,
+    "target_network_update_freq": 1,
+    "replay_buffer_config": {
+      "type": "MultiAgentPrioritizedReplayBuffer",
+      "prioritized_replay_alpha": 0.6,
+      "prioritized_replay_beta": 0.4,
+      "prioritized_replay_eps": 1e-06
+    }
+  },
+  "model": {
+    "fcnet_hiddens": [
+      256,
+      256
+    ],
+    "fcnet_activation": "relu"
+  },
+  "evaluation": {
+    "evaluation_interval": 5,
+    "evaluation_duration": 5,
+    "evaluation_config": {
+      "explore": false
+    }
+  },
+  "sweep": {
+    "training.train_batch_size": [
+      128,
+      256,
+      512
+    ]
+  },
+  "resources": {
+    "num_gpus": 0.25
+  }
+}

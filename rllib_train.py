@@ -290,7 +290,7 @@ def train(
 
 
 @app.command()
-def compare(
+def batch(
     config_dir: Path = typer.Option(Path("rllib_configs"), "--config-dir", help="Directory with RLlib JSON configs."),
     steps: int | None = typer.Option(None, "--steps", "-s", help="Override total timesteps for every config."),
     seeds: str = typer.Option("0,1,2", "--seeds", help="Comma-separated seeds to run for every config."),

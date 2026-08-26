@@ -1,0 +1,56 @@
+{
+  "name": "ddpg_hover_critic_lr_sweep",
+  "algorithm": "DDPG",
+  "framework": "torch",
+  "stop_metric": "num_env_steps_sampled_lifetime",
+  "api_stack": {
+    "enable_rl_module_and_learner": false,
+    "enable_env_runner_and_connector_v2": false
+  },
+  "stop": {
+    "timesteps_total": 1000000
+  },
+  "checkpoint_frequency": 10,
+  "env_config": {
+    "scenario": "baseline",
+    "obs": "kin",
+    "act": "one_d_rpm",
+    "gui": false,
+    "observation_noise_std": 0.0
+  },
+  "env_runners": {
+    "num_env_runners": 0,
+    "num_envs_per_env_runner": 1
+  },
+  "training": {
+    "actor_lr": 0.001,
+    "critic_lr": 0.001,
+    "gamma": 0.99,
+    "tau": 0.005,
+    "train_batch_size": 256
+  },
+  "model": {
+    "fcnet_hiddens": [
+      128,
+      128
+    ],
+    "fcnet_activation": "relu"
+  },
+  "evaluation": {
+    "evaluation_interval": 5,
+    "evaluation_duration": 5,
+    "evaluation_config": {
+      "explore": false
+    }
+  },
+  "sweep": {
+    "training.critic_lr": [
+      0.0003,
+      0.001,
+      0.003
+    ]
+  },
+  "resources": {
+    "num_gpus": 0.25
+  }
+}
