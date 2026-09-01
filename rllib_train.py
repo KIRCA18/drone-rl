@@ -60,14 +60,22 @@ def get_algorithm_config_class(algo_name: str):
         from ray.rllib.algorithms.sac import SACConfig
 
         return SACConfig
-    if normalized == Algorithm.td3:
-        from ray.rllib.algorithms.td3 import TD3Config
-
-        return TD3Config
-    if normalized == Algorithm.ddpg:
-        from ray.rllib.algorithms.ddpg import DDPGConfig
-
-        return DDPGConfig
+    if normalized in (Algorithm.td3, Algorithm.ddpg):
+        raise RuntimeError(
+            f"{normalized} isn't available in this environment: it was removed from "
+            "ray.rllib.algorithms upstream and now only ships via rllib_contrib, which "
+            "requires a separate, older Python/Ray stack. Use the dedicated environment "
+            "in rllib_contrib_env/ instead, e.g.:\n\n"
+            "    python3.10 -m venv .venv-contrib\n"
+            "    source .venv-contrib/bin/activate\n"
+            "    pip install -r rllib_contrib_env/requirements.txt\n"
+            "    pip install --no-deps -e \"git+https://github.com/utiasDSL/gym-pybullet-drones.git"
+            "@df831ee8f6fd9cd823f3ecdfa1474a4ddcd40771#egg=gym_pybullet_drones\"\n"
+            "    # rllib_contrib_env/vendor/ already ships the TD3/DDPG source, no build step needed\n"
+            "    cd rllib_contrib_env && python rllib_train_contrib.py train "
+            f"--config ../rllib_configs/{normalized.lower()}_hover.json\n\n"
+            "See rllib_contrib_env/README.md for details."
+        )
     raise typer.BadParameter(f"Unsupported algorithm: {algo_name}")
 
 
@@ -151,26 +159,31 @@ def register_drone_env() -> None:
 
 def raise_for_failed_trials(result_grid) -> None:
     errors = getattr(result_grid, "errors", [])
-    if not errors:
-        return
-
-    raise RuntimeError(f"{len(errors)} RLlib trial(s) failed. Check the Ray Tune error.txt files for details.")
+    if errors:
+        typer.secho(
+            f"WARNING: {len(errors)} RLlib trial(s) failed - see each trial's error.txt. "
+            "The completed trials were still saved.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 def configure_env_runners(config_obj, experiment_config: dict[str, Any]):
     runners = experiment_config.get("env_runners", {})
     num_runners = int(runners.get("num_env_runners", runners.get("num_rollout_workers", 0)))
     envs_per_runner = int(runners.get("num_envs_per_env_runner", 1))
+    rollout_fragment_length = runners.get("rollout_fragment_length", "auto")
 
     if hasattr(config_obj, "env_runners"):
         return config_obj.env_runners(
             num_env_runners=num_runners,
             num_envs_per_env_runner=envs_per_runner,
+            rollout_fragment_length=rollout_fragment_length,
         )
 
     return config_obj.rollouts(
         num_rollout_workers=num_runners,
         num_envs_per_worker=envs_per_runner,
+        rollout_fragment_length=rollout_fragment_length,
     )
 
 
@@ -182,6 +195,8 @@ def build_rllib_config(experiment_config: dict[str, Any], seed: int | None):
     model_config = copy.deepcopy(experiment_config.get("model", {}))
     evaluation_config = copy.deepcopy(experiment_config.get("evaluation", {}))
     resources_config = copy.deepcopy(experiment_config.get("resources", {}))
+    reporting_config = copy.deepcopy(experiment_config.get("reporting", {}))
+    exploration_config = copy.deepcopy(experiment_config.get("exploration", {}))
 
     if model_config:
         training_config["model"] = model_config
@@ -207,6 +222,12 @@ def build_rllib_config(experiment_config: dict[str, Any], seed: int | None):
 
     if evaluation_config:
         config_obj = config_obj.evaluation(**evaluation_config)
+
+    if reporting_config:
+        config_obj = config_obj.reporting(**reporting_config)
+
+    if exploration_config:
+        config_obj = config_obj.exploration(**exploration_config)
 
     return config_obj
 
@@ -242,7 +263,11 @@ def run_tuner(
     config_obj = build_rllib_config(config_for_build, seed)
     param_space = config_obj.to_dict()
 
-    ray.init(ignore_reinit_error=True)
+    seeds = experiment_config.get("seeds")
+    if seed is None and seeds:
+        param_space["seed"] = tune.grid_search(list(seeds))
+
+    ray.init(ignore_reinit_error=True, include_dashboard=False)
     try:
         tuner = tune.Tuner(
             experiment_config["algorithm"].upper(),
@@ -272,11 +297,14 @@ def train(
     name: str | None = typer.Option(None, "--name", "-n", help="Override experiment name."),
     results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir", help="Where Ray Tune writes results."),
     samples: int = typer.Option(1, "--samples", help="Number of Tune samples for stochastic/randomized sweeps."),
-    seed: int | None = typer.Option(None, "--seed", help="Random seed for this run."),
+    seed: int | None = typer.Option(None, "--seed", help="Pin ONE seed (disables the config's multi-seed grid)."),
+    seeds: str | None = typer.Option(None, "--seeds", help="Comma-separated seed list, overrides the config's 'seeds' (e.g. --seeds 0,1,2)."),
     use_sweep: bool = typer.Option(True, "--sweep/--no-sweep", help="Enable or disable grid-search sweep values from the config."),
 ):
     """Train one RLlib experiment from a JSON config."""
     experiment_config = load_experiment_config(config)
+    if seeds is not None:
+        experiment_config["seeds"] = [int(s) for s in seeds.split(",") if s.strip() != ""]
     run_tuner(
         experiment_config,
         steps=steps,

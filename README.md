@@ -16,6 +16,7 @@
 * [🚀 Installation & Setup](#-installation--setup)
 * [💻 CLI Usage (How to Run)](#-cli-usage-how-to-run)
 * [🧠 RLlib Experiments](#-rllib-experiments)
+* [🔬 TD3 & DDPG (separate environment)](#-td3--ddpg-separate-environment)
 
 ---
 
@@ -113,3 +114,54 @@ Outputs are written to:
 * `experiments/results/`
 * `experiments/plots/`
 * `reports/algorithm_comparison.md`
+
+---
+
+## 🔬 TD3 & DDPG (separate environment)
+
+Ray removed TD3 and DDPG from `ray.rllib.algorithms` — they only survive as the
+archived `rllib_contrib` packages, which are hard-pinned to `ray[rllib]==2.5.x`
+and **Python < 3.11**. That cannot share the main virtualenv (`ray[rllib]==2.58`,
+`gymnasium>=1.0`), so TD3/DDPG run from a second, isolated environment in
+`rllib_contrib_env/`. The algorithm source is vendored under
+`rllib_contrib_env/vendor/` (see `rllib_contrib_env/README.md` for attribution —
+it is copied verbatim from `ray-project/ray` at tag `ray-2.9.0`, Apache-2.0).
+
+### 1. Create the environment (Python 3.10)
+
+```bash
+# from the repo root — needs a Python 3.10 interpreter
+python3.10 -m venv rllib_contrib_env/.venv          # Windows: py -3.10 -m venv rllib_contrib_env\.venv
+
+# activate it
+source rllib_contrib_env/.venv/bin/activate         # Windows: rllib_contrib_env\.venv\Scripts\activate
+
+pip install -r rllib_contrib_env/requirements.txt
+
+# gym-pybullet-drones, pinned to the SAME commit the main env uses, installed
+# with --no-deps so pip doesn't fail on the older gymnasium pin:
+pip install --no-deps "git+https://github.com/utiasDSL/gym-pybullet-drones.git@df831ee8f6fd9cd823f3ecdfa1474a4ddcd40771#egg=gym_pybullet_drones"
+```
+
+If `import gym_pybullet_drones` later fails with
+`ModuleNotFoundError: No module named 'pkg_resources'`, run
+`pip install "setuptools<81"` in this venv.
+
+### 2. Run the configs
+
+Run from inside `rllib_contrib_env/`, using the shared configs in `../rllib_configs/`:
+
+```bash
+cd rllib_contrib_env
+
+# smoke test
+python rllib_train_contrib.py train --config ../rllib_configs/td3_hover.json --steps 4000 --no-sweep --seeds 0
+
+# a sweep (3 values x 5 seeds), short budget
+python rllib_train_contrib.py train --config ../rllib_configs/td3_hover_gamma.json  --steps 150000
+python rllib_train_contrib.py train --config ../rllib_configs/ddpg_hover_gamma.json --steps 150000
+```
+
+Results land in `../experiments/results/` — the same tree PPO/SAC use — so
+`python main.py rllib-results summarize` (run from the **main** environment)
+picks them up alongside everything else.
