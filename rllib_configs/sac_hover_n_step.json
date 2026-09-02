@@ -2,15 +2,22 @@
   "name": "sac_hover_n_step_sweep",
   "algorithm": "SAC",
   "framework": "torch",
-  "stop_metric": "num_env_steps_sampled_lifetime",
   "api_stack": {
     "enable_rl_module_and_learner": false,
     "enable_env_runner_and_connector_v2": false
   },
+  "stop_metric": "num_env_steps_sampled_lifetime",
   "stop": {
-    "timesteps_total": 1000000
+    "timesteps_total": 500000
   },
-  "checkpoint_frequency": 10,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "checkpoint_frequency": 20,
   "env_config": {
     "scenario": "baseline",
     "obs": "kin",
@@ -20,22 +27,19 @@
   },
   "env_runners": {
     "num_env_runners": 0,
-    "num_envs_per_env_runner": 1
+    "num_envs_per_env_runner": 1,
+    "rollout_fragment_length": 256
   },
-  "training": {
-    "lr": 0.0003,
-    "gamma": 0.99,
-    "tau": 0.005,
-    "train_batch_size": 256,
-    "n_step": 1,
-    "target_entropy": "auto",
-    "initial_alpha": 1.0,
-    "target_network_update_freq": 1,
-    "replay_buffer_config": {
-      "type": "MultiAgentPrioritizedReplayBuffer",
-      "prioritized_replay_alpha": 0.6,
-      "prioritized_replay_beta": 0.4,
-      "prioritized_replay_eps": 1e-06
+  "reporting": {
+    "min_sample_timesteps_per_iteration": 4000,
+    "min_time_s_per_iteration": 0
+  },
+  "evaluation": {
+    "evaluation_interval": 5,
+    "evaluation_duration": 5,
+    "evaluation_duration_unit": "episodes",
+    "evaluation_config": {
+      "explore": false
     }
   },
   "model": {
@@ -45,12 +49,21 @@
     ],
     "fcnet_activation": "relu"
   },
-  "evaluation": {
-    "evaluation_interval": 5,
-    "evaluation_duration": 5,
-    "evaluation_config": {
-      "explore": false
-    }
+  "training": {
+    "num_steps_sampled_before_learning_starts": 10000,
+    "training_intensity": 64,
+    "train_batch_size": 256,
+    "replay_buffer_config": {
+      "type": "MultiAgentReplayBuffer",
+      "capacity": 1000000
+    },
+    "gamma": 0.99,
+    "tau": 0.005,
+    "lr": 0.0003,
+    "n_step": 1,
+    "target_entropy": "auto",
+    "initial_alpha": 1.0,
+    "target_network_update_freq": 1
   },
   "sweep": {
     "training.n_step": [
@@ -58,8 +71,5 @@
       3,
       5
     ]
-  },
-  "resources": {
-    "num_gpus": 0.25
   }
 }
