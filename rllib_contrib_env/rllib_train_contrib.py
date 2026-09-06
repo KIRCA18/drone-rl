@@ -296,6 +296,136 @@ def run_tuner(
         ray.shutdown()
 
 
+def _latest_checkpoint(trial_dir: Path):
+    ckpts = sorted(trial_dir.glob("checkpoint_*"))
+    return ckpts[-1] if ckpts else None
+
+
+def _truncate_logs_to_iter(trial_dir: Path, keep_through_iter: int) -> None:
+    rj = trial_dir / "result.json"
+    if rj.exists():
+        kept = []
+        for line in rj.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                it = json.loads(line).get("training_iteration", 0)
+            except json.JSONDecodeError:
+                continue
+            if it is None or it <= keep_through_iter:
+                kept.append(line)
+        rj.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    pc = trial_dir / "progress.csv"
+    if pc.exists():
+        rows = pc.read_text(encoding="utf-8").splitlines()
+        if rows:
+            try:
+                ci = rows[0].split(",").index("training_iteration")
+            except ValueError:
+                ci = None
+            kept = [rows[0]]
+            for r in rows[1:]:
+                if ci is None:
+                    kept.append(r); continue
+                try:
+                    if int(float(r.split(",")[ci])) <= keep_through_iter:
+                        kept.append(r)
+                except (ValueError, IndexError):
+                    kept.append(r)
+            pc.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def _resume_one_trial(trial_dir: Path, stop_steps: int, checkpoint_frequency: int) -> None:
+    from ray.rllib.algorithms.algorithm import Algorithm
+
+    ckpt = _latest_checkpoint(trial_dir)
+    if ckpt is None:
+        typer.secho(f"  {trial_dir.name}: no checkpoint_* - skipping", fg=typer.colors.YELLOW)
+        return
+    algo = Algorithm.from_checkpoint(str(ckpt))
+    resume_iter = int(algo.iteration)
+    _truncate_logs_to_iter(trial_dir, resume_iter)
+    result_file = trial_dir / "result.json"
+
+    def _steps(res):
+        return int(res.get(STOP_METRIC) or res.get("timesteps_total") or 0)
+
+    def _save(it):
+        target = trial_dir / f"checkpoint_{it:06d}"
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            algo.save_to_path(str(target))
+        except (RuntimeError, AttributeError):
+            algo.save(str(target))
+
+    typer.secho(f"  {trial_dir.name}: resuming from {ckpt.name} (iter {resume_iter})", fg=typer.colors.CYAN)
+    it = resume_iter
+    try:
+        while True:
+            res = algo.train()
+            with result_file.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(res, default=str) + "\n")
+            it = int(res.get("training_iteration", algo.iteration))
+            if checkpoint_frequency and it % checkpoint_frequency == 0:
+                _save(it)
+            if _steps(res) >= stop_steps:
+                break
+        _save(it)
+        typer.secho(f"  {trial_dir.name}: reached {_steps(res)} steps (iter {it})", fg=typer.colors.GREEN)
+    finally:
+        algo.stop()
+
+
+@app.command()
+def resume(
+    config: Path = typer.Option(..., "--config", "-c", help="The JSON config the experiment was launched with."),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir", help="Where the experiment dir lives."),
+    name: str | None = typer.Option(None, "--name", "-n", help="Experiment name override (defaults to the config's 'name')."),
+    steps: int | None = typer.Option(None, "--steps", "-s", help="Target total timesteps (defaults to the config's stop)."),
+    errored: bool = typer.Option(False, "--errored", help="Also resume ERRORED trials from their last checkpoint."),
+    trial: str | None = typer.Option(None, "--trial", help="Resume ONLY the trial(s) whose folder name contains this text."),
+):
+    """Continue an interrupted TD3/DDPG run: all unfinished trials, or just one with --trial."""
+    import ray
+    from ray import tune
+
+    experiment_config = load_experiment_config(config)
+    algo_name = experiment_config["algorithm"].upper()
+    if algo_name not in SUPPORTED_ALGORITHMS:
+        raise typer.BadParameter(f"{config} is {algo_name!r}; this script only handles {sorted(SUPPORTED_ALGORITHMS)}.")
+
+    experiment_name = name or experiment_config.get("name", "drone_rllib_contrib_experiment")
+    experiment_dir = (results_dir / experiment_name).resolve()
+    if not experiment_dir.exists():
+        raise typer.BadParameter(f"No experiment to resume at {experiment_dir}")
+    stop_steps = steps or int(experiment_config.get("stop", {}).get("timesteps_total", 100_000))
+    checkpoint_frequency = int(experiment_config.get("checkpoint_frequency", 10))
+
+    register_drone_env()
+    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": {"PYTHONPATH": os.environ["PYTHONPATH"]}})
+    try:
+        if trial:
+            matches = sorted(d for d in experiment_dir.iterdir() if d.is_dir() and trial in d.name)
+            if not matches:
+                raise typer.BadParameter(f"No trial dir under {experiment_dir} contains {trial!r}")
+            typer.secho(f"Resuming {len(matches)} trial(s) matching {trial!r}:", fg=typer.colors.GREEN)
+            for trial_dir in matches:
+                _resume_one_trial(trial_dir, stop_steps, checkpoint_frequency)
+        else:
+            config_obj = get_algorithm_config_class(algo_name)()
+            tuner = tune.Tuner.restore(
+                str(experiment_dir),
+                trainable=config_obj.algo_class,
+                resume_unfinished=True,
+                resume_errored=errored,
+            )
+            result_grid = tuner.fit()
+            raise_for_failed_trials(result_grid)
+    finally:
+        ray.shutdown()
+    typer.secho(f"{algo_name} resume finished (rllib_contrib).", fg=typer.colors.GREEN)
+
+
 @app.command()
 def train(
     config: Path = typer.Option(..., "--config", "-c", help="Path to a TD3/DDPG RLlib experiment JSON config."),
