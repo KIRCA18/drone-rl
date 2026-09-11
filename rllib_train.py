@@ -317,6 +317,159 @@ def train(
     typer.secho("RLlib training finished.", fg=typer.colors.GREEN)
 
 
+def _latest_checkpoint(trial_dir: Path) -> Path | None:
+    ckpts = sorted(trial_dir.glob("checkpoint_*"))
+    return ckpts[-1] if ckpts else None
+
+
+def _truncate_logs_to_iter(trial_dir: Path, keep_through_iter: int) -> None:
+    rj = trial_dir / "result.json"
+    if rj.exists():
+        kept = []
+        for line in rj.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                it = json.loads(line).get("training_iteration", 0)
+            except json.JSONDecodeError:
+                continue
+            if it is None or it <= keep_through_iter:
+                kept.append(line)
+        rj.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    pc = trial_dir / "progress.csv"
+    if pc.exists():
+        rows = pc.read_text(encoding="utf-8").splitlines()
+        if rows:
+            header = rows[0].split(",")
+            try:
+                ci = header.index("training_iteration")
+            except ValueError:
+                ci = None
+            kept = [rows[0]]
+            for r in rows[1:]:
+                if ci is None:
+                    kept.append(r)
+                    continue
+                cells = r.split(",")
+                try:
+                    if int(float(cells[ci])) <= keep_through_iter:
+                        kept.append(r)
+                except (ValueError, IndexError):
+                    kept.append(r)
+            pc.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def _resume_one_trial(trial_dir: Path, stop_metric: str, stop_steps: int, checkpoint_frequency: int) -> None:
+    from ray.rllib.algorithms.algorithm import Algorithm
+
+    ckpt = _latest_checkpoint(trial_dir)
+    if ckpt is None:
+        typer.secho(f"  {trial_dir.name}: no checkpoint_* to resume from - skipping", fg=typer.colors.YELLOW)
+        return
+
+    algo = Algorithm.from_checkpoint(str(ckpt))
+    result_file = trial_dir / "result.json"
+    resume_iter = int(algo.iteration)
+    _truncate_logs_to_iter(trial_dir, resume_iter)
+
+    def _steps(res: dict) -> int:
+        return int(res.get(stop_metric) or res.get("timesteps_total") or res.get("num_env_steps_sampled_lifetime") or 0)
+
+    def _save(it: int) -> None:
+        target = trial_dir / f"checkpoint_{it:06d}"
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            algo.save_to_path(str(target))          # new API stack
+        except (RuntimeError, AttributeError):
+            algo.save(str(target))                  # old API stack (SAC / contrib TD3/DDPG)
+
+    typer.secho(f"  {trial_dir.name}: resuming from {ckpt.name} (iter {resume_iter})", fg=typer.colors.CYAN)
+    it = resume_iter
+    try:
+        while True:
+            res = algo.train()
+            with result_file.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(res, default=str) + "\n")
+            it = int(res.get("training_iteration", algo.iteration))
+            if checkpoint_frequency and it % checkpoint_frequency == 0:
+                _save(it)
+            if _steps(res) >= stop_steps:
+                break
+        _save(it)
+        typer.secho(f"  {trial_dir.name}: reached {_steps(res)} steps (iter {it})", fg=typer.colors.GREEN)
+    finally:
+        algo.stop()
+
+
+def resume_experiment(
+    experiment_config: dict[str, Any],
+    *,
+    results_dir: Path,
+    name: str | None,
+    steps: int | None,
+    include_errored: bool,
+    only_trial: str | None,
+) -> None:
+    import ray
+    from ray import tune
+
+    register_drone_env()
+    experiment_name = name or experiment_config.get("name", "drone_rllib_experiment")
+    experiment_dir = (results_dir / experiment_name).resolve()
+    if not experiment_dir.exists():
+        raise typer.BadParameter(f"No experiment to resume at {experiment_dir}")
+
+    stop_metric = experiment_config.get("stop_metric", "num_env_steps_sampled_lifetime")
+    stop_steps = steps or int(experiment_config.get("stop", {}).get("timesteps_total", 100_000))
+    checkpoint_frequency = int(experiment_config.get("checkpoint_frequency", 10))
+
+    ray.init(ignore_reinit_error=True, include_dashboard=False)
+    try:
+        if only_trial:
+            matches = sorted(d for d in experiment_dir.iterdir() if d.is_dir() and only_trial in d.name)
+            if not matches:
+                raise typer.BadParameter(f"No trial dir under {experiment_dir} contains {only_trial!r}")
+            typer.secho(f"Resuming {len(matches)} trial(s) matching {only_trial!r}:", fg=typer.colors.GREEN)
+            for trial_dir in matches:
+                _resume_one_trial(trial_dir, stop_metric, stop_steps, checkpoint_frequency)
+            return
+
+        # whole experiment
+        tuner = tune.Tuner.restore(
+            str(experiment_dir),
+            trainable=experiment_config["algorithm"].upper(),
+            resume_unfinished=True,
+            resume_errored=include_errored,
+        )
+        result_grid = tuner.fit()
+        raise_for_failed_trials(result_grid)
+    finally:
+        ray.shutdown()
+
+
+@app.command()
+def resume(
+    config: Path = typer.Option(..., "--config", "-c", help="The JSON config the experiment was launched with."),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir", help="Where the experiment dir lives."),
+    name: str | None = typer.Option(None, "--name", "-n", help="Experiment name override (defaults to the config's 'name')."),
+    steps: int | None = typer.Option(None, "--steps", "-s", help="Target total timesteps (defaults to the config's stop)."),
+    errored: bool = typer.Option(False, "--errored", help="Also resume ERRORED trials from their last checkpoint (default: only unfinished ones)."),
+    trial: str | None = typer.Option(None, "--trial", help="Resume ONLY the trial(s) whose folder name contains this text, e.g. 'gamma=0.9900,seed=0'."),
+):
+    """Continue an interrupted run: all unfinished trials, or just one with --trial."""
+    experiment_config = load_experiment_config(config)
+    resume_experiment(
+        experiment_config,
+        results_dir=results_dir,
+        name=name,
+        steps=steps,
+        include_errored=errored,
+        only_trial=trial,
+    )
+    typer.secho("RLlib resume finished.", fg=typer.colors.GREEN)
+
+
 @app.command()
 def batch(
     config_dir: Path = typer.Option(Path("rllib_configs"), "--config-dir", help="Directory with RLlib JSON configs."),
