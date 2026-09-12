@@ -115,6 +115,24 @@ Outputs are written to:
 * `experiments/plots/`
 * `reports/algorithm_comparison.md`
 
+### Visualize an RLlib checkpoint
+
+After training, point the visualizer at a Ray Tune checkpoint directory to watch
+the policy in the PyBullet GUI:
+
+```bash
+python main.py rllib visualize \
+  --checkpoint experiments/results/ppo_hover/PPO_DroneHover-v0_.../checkpoint_000010 \
+  --config rllib_configs/ppo_hover.json
+```
+
+Useful options:
+
+```bash
+python main.py rllib visualize --help
+python main.py rllib visualize --checkpoint PATH --episodes 1 --max-steps 1000 --no-explore
+```
+
 ---
 
 ## 🔬 TD3 & DDPG (separate environment)
@@ -165,3 +183,13 @@ python rllib_train_contrib.py train --config ../rllib_configs/ddpg_hover_gamma.j
 Results land in `../experiments/results/` — the same tree PPO/SAC use — so
 `python main.py rllib-results summarize` (run from the **main** environment)
 picks them up alongside everything else.
+
+To visualize a TD3/DDPG checkpoint, run the contrib visualizer from inside the
+dedicated environment:
+
+```bash
+cd rllib_contrib_env
+python rllib_train_contrib.py visualize \
+  --checkpoint ../experiments/results/td3_hover/TD3_DroneHover-v0_.../checkpoint_000010 \
+  --config ../rllib_configs/td3_hover.json
+```

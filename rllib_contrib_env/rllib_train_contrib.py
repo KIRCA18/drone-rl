@@ -164,6 +164,78 @@ def register_drone_env() -> None:
     register_env(ENV_NAME, make_drone_env)
 
 
+def load_visualization_env_config(config_path: Path | None, algorithm) -> dict[str, Any]:
+    if config_path is not None:
+        return copy.deepcopy(load_experiment_config(config_path).get("env_config", {}))
+
+    algo_config = getattr(algorithm, "config", None)
+    if algo_config is None:
+        return {}
+
+    if isinstance(algo_config, dict):
+        return copy.deepcopy(algo_config.get("env_config", {}))
+
+    return copy.deepcopy(getattr(algo_config, "env_config", {}) or {})
+
+
+def compute_visualization_action(algorithm, observation, explore: bool):
+    try:
+        return algorithm.compute_single_action(observation, explore=explore)
+    except TypeError:
+        result = algorithm.compute_single_action(observation)
+        return result[0] if isinstance(result, tuple) else result
+
+
+def visualize_checkpoint(
+    checkpoint: Path,
+    *,
+    config: Path | None,
+    episodes: int,
+    max_steps: int,
+    sleep: float,
+    explore: bool,
+) -> None:
+    import ray
+    from ray.rllib.algorithms.algorithm import Algorithm
+
+    register_drone_env()
+    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": {"PYTHONPATH": os.environ["PYTHONPATH"]}})
+    algorithm = None
+    env = None
+    try:
+        algorithm = Algorithm.from_checkpoint(str(checkpoint))
+        env_config = load_visualization_env_config(config, algorithm)
+        env_config["gui"] = True
+        env = make_drone_env(env_config)
+
+        typer.secho(
+            "Launching rllib_contrib checkpoint in the PyBullet GUI. Press Ctrl+C to stop.",
+            fg=typer.colors.CYAN,
+        )
+        for episode in range(1, episodes + 1):
+            observation, _ = env.reset()
+            episode_return = 0.0
+            for step in range(1, max_steps + 1):
+                action = compute_visualization_action(algorithm, observation, explore)
+                observation, reward, terminated, truncated, _ = env.step(action)
+                episode_return += float(reward)
+                if sleep > 0:
+                    import time
+
+                    time.sleep(sleep)
+                if terminated or truncated:
+                    break
+            typer.echo(f"episode {episode}: return={episode_return:.3f}, steps={step}")
+    except KeyboardInterrupt:
+        typer.echo("\nVisualization stopped by user.")
+    finally:
+        if env is not None:
+            env.close()
+        if algorithm is not None:
+            algorithm.stop()
+        ray.shutdown()
+
+
 def raise_for_failed_trials(result_grid) -> None:
     errors = getattr(result_grid, "errors", [])
     if errors:
@@ -424,6 +496,30 @@ def resume(
     finally:
         ray.shutdown()
     typer.secho(f"{algo_name} resume finished (rllib_contrib).", fg=typer.colors.GREEN)
+
+
+@app.command()
+def visualize(
+    checkpoint: Path = typer.Option(..., "--checkpoint", "-k", help="Path to a TD3/DDPG RLlib checkpoint directory."),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Optional experiment JSON config; used for env_config/scenario."),
+    episodes: int = typer.Option(3, "--episodes", "-e", min=1, help="Number of episodes to render."),
+    max_steps: int = typer.Option(2400, "--max-steps", min=1, help="Maximum environment steps per episode."),
+    sleep: float = typer.Option(1.0 / 240.0, "--sleep", min=0.0, help="Seconds to wait between GUI frames."),
+    explore: bool = typer.Option(False, "--explore/--no-explore", help="Use exploratory actions instead of deterministic evaluation actions."),
+):
+    """Render a trained rllib_contrib TD3/DDPG checkpoint in the PyBullet visualizer."""
+    if not checkpoint.exists():
+        raise typer.BadParameter(f"Checkpoint path does not exist: {checkpoint}")
+    if config is not None and not config.exists():
+        raise typer.BadParameter(f"Config path does not exist: {config}")
+    visualize_checkpoint(
+        checkpoint,
+        config=config,
+        episodes=episodes,
+        max_steps=max_steps,
+        sleep=sleep,
+        explore=explore,
+    )
 
 
 @app.command()
