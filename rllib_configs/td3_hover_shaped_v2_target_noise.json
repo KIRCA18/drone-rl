@@ -1,0 +1,94 @@
+{
+  "name": "td3_hover_shaped_v2_target_noise_sweep",
+  "algorithm": "TD3",
+  "framework": "torch",
+  "api_stack": {
+    "enable_rl_module_and_learner": false,
+    "enable_env_runner_and_connector_v2": false
+  },
+  "stop_metric": "num_env_steps_sampled_lifetime",
+  "stop": {
+    "timesteps_total": 500000
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "checkpoint_frequency": 20,
+  "env_config": {
+    "scenario": "baseline",
+    "obs": "kin",
+    "act": "one_d_rpm",
+    "gui": false,
+    "observation_noise_std": 0.0,
+    "reward_shaping": {
+      "potential_scale": 5.0,
+      "action_penalty": 1.0,
+      "velocity_penalty": 0.5,
+      "enabled": true,
+      "gamma": 0.99
+    }
+  },
+  "env_runners": {
+    "num_env_runners": 0,
+    "num_envs_per_env_runner": 1,
+    "rollout_fragment_length": 256
+  },
+  "reporting": {
+    "min_sample_timesteps_per_iteration": 4000,
+    "min_time_s_per_iteration": 0
+  },
+  "evaluation": {
+    "evaluation_interval": 5,
+    "evaluation_duration": 5,
+    "evaluation_duration_unit": "episodes",
+    "evaluation_config": {
+      "explore": false
+    }
+  },
+  "model": {
+    "fcnet_hiddens": [
+      256,
+      256
+    ],
+    "fcnet_activation": "relu"
+  },
+  "training": {
+    "training_intensity": 4.0,
+    "train_batch_size": 1024,
+    "replay_buffer_config": {
+      "type": "MultiAgentReplayBuffer",
+      "capacity": 1000000
+    },
+    "gamma": 0.99,
+    "tau": 0.005,
+    "n_step": 1,
+    "num_steps_sampled_before_learning_starts": 10000,
+    "actor_lr": 0.0003,
+    "critic_lr": 0.001,
+    "policy_delay": 2,
+    "target_noise": 0.2,
+    "target_noise_clip": 0.5
+  },
+  "exploration": {
+    "explore": true,
+    "exploration_config": {
+      "type": "GaussianNoise",
+      "random_timesteps": 10000,
+      "stddev": 0.1,
+      "initial_scale": 1.0,
+      "final_scale": 1.0,
+      "scale_timesteps": 1
+    }
+  },
+  "sweep": {
+    "training.target_noise": [
+      0.1,
+      0.2,
+      0.4
+    ]
+  }
+}
