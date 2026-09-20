@@ -110,6 +110,96 @@ def make_drone_env(env_config: dict[str, Any]):
         initial_xyzs=initial_xyzs,
     )
 
+    class PotentialShapingWrapper(gym.Wrapper):
+
+        def __init__(self, wrapped_env, scale: float, gamma: float,
+                     action_penalty: float, action_penalty_end: float,
+                     action_penalty_hold_steps: int, action_penalty_decay_steps: int,
+                     velocity_penalty: float, velocity_penalty_end: float,
+                     velocity_penalty_hold_steps: int, velocity_penalty_decay_steps: int):
+            super().__init__(wrapped_env)
+            self.scale = scale
+            self.gamma = gamma
+            self.action_penalty_start = action_penalty
+            self.action_penalty_end = action_penalty_end
+            self.action_penalty_hold = action_penalty_hold_steps
+            self.action_penalty_decay = action_penalty_decay_steps
+            self.velocity_penalty_start = velocity_penalty
+            self.velocity_penalty_end = velocity_penalty_end
+            self.velocity_penalty_hold = velocity_penalty_hold_steps
+            self.velocity_penalty_decay = velocity_penalty_decay_steps
+            self._prev_phi = None
+            self._step_count = 0  # counts env steps across the whole run, not per-episode
+
+        def _phi(self, state) -> float:
+            d = float(np.linalg.norm(self.env.TARGET_POS - state[0:3]))
+            return -self.scale * d
+
+        @staticmethod
+        def _scheduled(step_count: int, start: float, end: float, hold: int, decay: int) -> float:
+            if step_count <= hold:
+                return start
+            if decay <= 0 or step_count >= hold + decay:
+                return end
+            frac = (step_count - hold) / decay
+            return start + (end - start) * frac
+
+        def reset(self, **kwargs):
+            observation, info = self.env.reset(**kwargs)
+            self._prev_phi = self._phi(self.env._getDroneStateVector(0))
+            return observation, info
+
+        def step(self, action):
+            observation, reward, terminated, truncated, info = self.env.step(action)
+            state = self.env._getDroneStateVector(0)
+
+            phi = self._phi(state)
+            potential_term = self.gamma * phi - self._prev_phi
+            self._prev_phi = phi
+
+            action_penalty_now = self._scheduled(
+                self._step_count, self.action_penalty_start, self.action_penalty_end,
+                self.action_penalty_hold, self.action_penalty_decay)
+            velocity_penalty_now = self._scheduled(
+                self._step_count, self.velocity_penalty_start, self.velocity_penalty_end,
+                self.velocity_penalty_hold, self.velocity_penalty_decay)
+            self._step_count += 1
+
+            action_arr = np.asarray(action, dtype=np.float64)
+            action_term = -action_penalty_now * float(np.mean(action_arr ** 2))
+
+            vz = float(state[12])  # vel = state[10:13] = (vx, vy, vz)
+            velocity_term = -velocity_penalty_now * abs(vz)
+
+            shaping = potential_term + action_term + velocity_term
+            info = dict(info)
+            info["base_reward"] = reward
+            info["shaping_reward"] = shaping
+            info["shaping_potential"] = potential_term
+            info["shaping_action"] = action_term
+            info["shaping_velocity"] = velocity_term
+            info["action_penalty_now"] = action_penalty_now
+            info["velocity_penalty_now"] = velocity_penalty_now
+            return observation, reward + shaping, terminated, truncated, info
+
+    reward_shaping = env_config.get("reward_shaping") or {}
+    if bool(reward_shaping.get("enabled", False)):
+        _ap = float(reward_shaping.get("action_penalty", 0.0))
+        _vp = float(reward_shaping.get("velocity_penalty", 0.0))
+        env = PotentialShapingWrapper(
+            env,
+            scale=float(reward_shaping.get("potential_scale", 5.0)),
+            gamma=float(reward_shaping.get("gamma", 0.99)),
+            action_penalty=_ap,
+            action_penalty_end=float(reward_shaping.get("action_penalty_end", _ap)),
+            action_penalty_hold_steps=int(reward_shaping.get("action_penalty_hold_steps", 0)),
+            action_penalty_decay_steps=int(reward_shaping.get("action_penalty_decay_steps", 0)),
+            velocity_penalty=_vp,
+            velocity_penalty_end=float(reward_shaping.get("velocity_penalty_end", _vp)),
+            velocity_penalty_hold_steps=int(reward_shaping.get("velocity_penalty_hold_steps", 0)),
+            velocity_penalty_decay_steps=int(reward_shaping.get("velocity_penalty_decay_steps", 0)),
+        )
+
     class RllibDroneWrapper(gym.Wrapper):
         def __init__(self, wrapped_env):
             super().__init__(wrapped_env)
@@ -320,6 +410,8 @@ def run_tuner(
     samples: int,
     seed: int | None,
     use_sweep: bool,
+    max_concurrent_trials: int | None = None,
+    cpus_per_trial: float = 1.0,
 ):
     import ray
     from ray import tune
@@ -345,12 +437,22 @@ def run_tuner(
     if seed is None and seeds:
         param_space["seed"] = tune.grid_search(list(seeds))
 
-    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": {"PYTHONPATH": os.environ["PYTHONPATH"]}})
+    env_vars = {"PYTHONPATH": os.environ["PYTHONPATH"]}
+    if max_concurrent_trials:
+        total_cpus = os.cpu_count() or max_concurrent_trials
+        threads_per_trial = max(1, total_cpus // max_concurrent_trials)
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            env_vars[var] = str(threads_per_trial)
+
+    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": env_vars})
     try:
+        trainable = config_obj.algo_class
+        if cpus_per_trial and cpus_per_trial != 1.0:
+            trainable = tune.with_resources(trainable, resources={"cpu": cpus_per_trial})
         tuner = tune.Tuner(
-            config_obj.algo_class,
+            trainable,
             param_space=param_space,
-            tune_config=tune.TuneConfig(num_samples=samples),
+            tune_config=tune.TuneConfig(num_samples=samples, max_concurrent_trials=max_concurrent_trials),
             run_config=RunConfig(
                 name=experiment_name,
                 storage_path=str(results_dir.resolve()),
@@ -456,6 +558,14 @@ def resume(
     steps: int | None = typer.Option(None, "--steps", "-s", help="Target total timesteps (defaults to the config's stop)."),
     errored: bool = typer.Option(False, "--errored", help="Also resume ERRORED trials from their last checkpoint."),
     trial: str | None = typer.Option(None, "--trial", help="Resume ONLY the trial(s) whose folder name contains this text."),
+    max_concurrent_trials: int | None = typer.Option(
+        None, "--max-concurrent-trials", "--max-concurrent",
+        help="Sets per-trial thread limits (OMP_NUM_THREADS etc.) as if this many trials run at once. "
+             "NOTE: for a whole-experiment resume, the actual concurrent-trial cap is inherited from the "
+             "original 'train' run's tune_config and can't be changed here — pass --max-concurrent-trials "
+             "on 'train' next time if you need a different cap. This flag only helps --trial resumes and "
+             "throttles this process's own thread usage.",
+    ),
 ):
     """Continue an interrupted TD3/DDPG run: all unfinished trials, or just one with --trial."""
     import ray
@@ -474,7 +584,13 @@ def resume(
     checkpoint_frequency = int(experiment_config.get("checkpoint_frequency", 10))
 
     register_drone_env()
-    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": {"PYTHONPATH": os.environ["PYTHONPATH"]}})
+    env_vars = {"PYTHONPATH": os.environ["PYTHONPATH"]}
+    if max_concurrent_trials:
+        total_cpus = os.cpu_count() or max_concurrent_trials
+        threads_per_trial = max(1, total_cpus // max_concurrent_trials)
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            env_vars[var] = str(threads_per_trial)
+    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": env_vars})
     try:
         if trial:
             matches = sorted(d for d in experiment_dir.iterdir() if d.is_dir() and trial in d.name)
@@ -532,6 +648,16 @@ def train(
     seed: int | None = typer.Option(None, "--seed", help="Pin ONE seed (disables the config's multi-seed grid)."),
     seeds: str | None = typer.Option(None, "--seeds", help="Comma-separated seed list, overrides the config's 'seeds' (e.g. --seeds 0,1,2)."),
     use_sweep: bool = typer.Option(True, "--sweep/--no-sweep", help="Enable or disable grid-search sweep values from the config."),
+    max_concurrent_trials: int | None = typer.Option(
+        None, "--max-concurrent-trials", "--max-concurrent",
+        help="Cap how many trials run at once (default: unlimited, Ray packs as many as fit your CPUs). "
+             "Use this on multi-seed/sweep configs to avoid RAM/CPU thrashing, e.g. --max-concurrent-trials 9.",
+    ),
+    cpus_per_trial: float = typer.Option(
+        1.0, "--cpus-per-trial",
+        help="CPUs Ray reserves per trial for scheduling purposes. Raise this (e.g. to total_cpus/max_concurrent_trials) "
+             "to make Ray's own scheduler enforce the cap even without --max-concurrent-trials.",
+    ),
 ):
     """Train one TD3 or DDPG experiment from a JSON config, via rllib_contrib."""
     experiment_config = load_experiment_config(config)
@@ -551,6 +677,8 @@ def train(
         samples=samples,
         seed=seed,
         use_sweep=use_sweep,
+        max_concurrent_trials=max_concurrent_trials,
+        cpus_per_trial=cpus_per_trial,
     )
     typer.secho(f"{algo} training finished (rllib_contrib).", fg=typer.colors.GREEN)
 
