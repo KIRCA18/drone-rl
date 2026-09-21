@@ -50,6 +50,10 @@ def apply_sweep(config: dict[str, Any], sweep: dict[str, list[Any]]) -> dict[str
     return expanded
 
 
+def short_trial_dirname(trial) -> str:
+    return f"{trial.trainable_name}_{trial.trial_id}"
+
+
 def get_algorithm_config_class(algo_name: str):
     normalized = algo_name.upper()
     if normalized == Algorithm.ppo:
@@ -91,10 +95,15 @@ def make_drone_env(env_config: dict[str, Any]):
     act_type = ActionType(env_config.get("act", "one_d_rpm"))
     scenario = env_config.get("scenario", "baseline")
     observation_noise_std = float(env_config.get("observation_noise_std", 0.0))
+    initial_position_range = float(env_config.get("initial_position_range", 0.0))
+    initial_z_range = float(env_config.get("initial_z_range", 0.0))
+    reward_config = copy.deepcopy(env_config.get("reward", {}))
 
     initial_xyzs = None
     if scenario == "offset_start":
         initial_xyzs = np.array([[0.15, -0.15, 1.0]], dtype=np.float32)
+    elif scenario == "random_start" and initial_position_range <= 0:
+        initial_position_range = 0.25
 
     env = HoverAviary(
         gui=bool(env_config.get("gui", False)),
@@ -102,6 +111,116 @@ def make_drone_env(env_config: dict[str, Any]):
         act=act_type,
         initial_xyzs=initial_xyzs,
     )
+
+    class RandomizedStartWrapper(gym.Wrapper):
+        def __init__(self, wrapped_env, xy_range: float, z_range: float):
+            super().__init__(wrapped_env)
+            self.xy_range = xy_range
+            self.z_range = z_range
+
+        def reset(self, **kwargs):
+            base_xyz = np.asarray(getattr(self.unwrapped, "TARGET_POS", [0.0, 0.0, 1.0]), dtype=np.float32)
+            offset = np.zeros(3, dtype=np.float32)
+            offset[:2] = self.np_random.uniform(-self.xy_range, self.xy_range, size=2)
+            if self.z_range > 0:
+                offset[2] = self.np_random.uniform(-self.z_range, self.z_range)
+            self.unwrapped.INIT_XYZS = (base_xyz + offset).reshape(1, 3)
+            return self.env.reset(**kwargs)
+
+    class RewardShapingWrapper(gym.Wrapper):
+        DEFAULTS = {
+            "position": {
+                "original_weight": 1.0,
+                "position_weight": 1.0,
+            },
+            "stable_hover": {
+                "original_weight": 1.0,
+                "velocity_weight": 0.20,
+                "attitude_weight": 0.15,
+                "angular_weight": 0.05,
+            },
+            "energy_aware": {
+                "original_weight": 1.0,
+                "velocity_weight": 0.20,
+                "attitude_weight": 0.15,
+                "angular_weight": 0.05,
+                "energy_weight": 0.03,
+            },
+            "smooth_control": {
+                "original_weight": 1.0,
+                "velocity_weight": 0.20,
+                "attitude_weight": 0.15,
+                "angular_weight": 0.05,
+                "energy_weight": 0.02,
+                "smooth_weight": 0.05,
+            },
+        }
+
+        def __init__(self, wrapped_env, config: dict[str, Any]):
+            super().__init__(wrapped_env)
+            self.mode = str(config.get("mode", "baseline"))
+            weights = copy.deepcopy(self.DEFAULTS.get(self.mode, {}))
+            weights.update(config.get("weights", {}))
+            self.weights = weights
+            self.alive_bonus = float(config.get("alive_bonus", weights.get("alive_bonus", 0.0)))
+            self.target_pos = np.asarray(
+                config.get("target_pos", getattr(self.unwrapped, "TARGET_POS", [0.0, 0.0, 1.0])),
+                dtype=np.float32,
+            )
+            self._previous_action = None
+
+        def reset(self, **kwargs):
+            self._previous_action = None
+            return self.env.reset(**kwargs)
+
+        def _normalized_action(self, action):
+            action = np.asarray(action, dtype=np.float32).reshape(-1)
+            high = np.asarray(self.action_space.high, dtype=np.float32).reshape(-1)
+            high = np.where(np.isfinite(high) & (np.abs(high) > 1e-6), np.abs(high), 1.0)
+            if high.size == action.size:
+                return action / high
+            return action
+
+        def _components(self, action):
+            state = np.asarray(self.unwrapped._getDroneStateVector(0), dtype=np.float32)
+            position = state[0:3]
+            roll_pitch = state[7:9]
+            linear_velocity = state[10:13]
+            angular_velocity = state[13:16]
+            normalized_action = self._normalized_action(action)
+            if self._previous_action is None:
+                action_delta = np.zeros_like(normalized_action)
+            else:
+                action_delta = normalized_action - self._previous_action
+
+            return {
+                "reward_position_error": float(np.linalg.norm(self.target_pos - position)),
+                "reward_velocity_error": float(np.linalg.norm(linear_velocity)),
+                "reward_attitude_error": float(np.linalg.norm(roll_pitch)),
+                "reward_angular_error": float(np.linalg.norm(angular_velocity)),
+                "reward_energy_error": float(np.linalg.norm(normalized_action)),
+                "reward_smoothness_error": float(np.linalg.norm(action_delta)),
+            }
+
+        def step(self, action):
+            observation, original_reward, terminated, truncated, info = self.env.step(action)
+            components = self._components(action)
+            reward = float(self.weights.get("original_weight", 1.0)) * float(original_reward)
+            reward += self.alive_bonus
+            reward -= float(self.weights.get("position_weight", 0.0)) * components["reward_position_error"]
+            reward -= float(self.weights.get("velocity_weight", 0.0)) * components["reward_velocity_error"]
+            reward -= float(self.weights.get("attitude_weight", 0.0)) * components["reward_attitude_error"]
+            reward -= float(self.weights.get("angular_weight", 0.0)) * components["reward_angular_error"]
+            reward -= float(self.weights.get("energy_weight", 0.0)) * components["reward_energy_error"]
+            reward -= float(self.weights.get("smooth_weight", 0.0)) * components["reward_smoothness_error"]
+
+            info = dict(info)
+            info.update(components)
+            info["reward_original"] = float(original_reward)
+            info["reward_shaped"] = float(reward)
+            info["reward_mode"] = self.mode
+            self._previous_action = self._normalized_action(action)
+            return observation, reward, terminated, truncated, info
 
     class RllibDroneWrapper(gym.Wrapper):
         def __init__(self, wrapped_env):
@@ -144,6 +263,12 @@ def make_drone_env(env_config: dict[str, Any]):
         def observation(self, observation):
             noise = self.np_random.normal(0.0, self.noise_std, size=observation.shape)
             return (observation + noise).astype(np.float32)
+
+    if initial_position_range > 0 or initial_z_range > 0:
+        env = RandomizedStartWrapper(env, initial_position_range, initial_z_range)
+
+    if reward_config and reward_config.get("mode", "baseline") != "baseline":
+        env = RewardShapingWrapper(env, reward_config)
 
     if observation_noise_std > 0:
         env = NoisyObservationWrapper(env, observation_noise_std)
@@ -272,7 +397,10 @@ def run_tuner(
         tuner = tune.Tuner(
             experiment_config["algorithm"].upper(),
             param_space=param_space,
-            tune_config=tune.TuneConfig(num_samples=samples),
+            tune_config=tune.TuneConfig(
+                num_samples=samples,
+                trial_dirname_creator=short_trial_dirname,
+            ),
             run_config=RunConfig(
                 name=experiment_name,
                 storage_path=str(results_dir.resolve()),

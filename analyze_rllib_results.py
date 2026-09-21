@@ -103,6 +103,24 @@ def _sweep_param_from_name(trial_dir_name: str) -> tuple[str | None, str | None]
     return "+".join(sorted(toks)), ",".join(f"{k}={toks[k]}" for k in sorted(toks))
 
 
+def _sweep_param_from_params(params: dict) -> tuple[str | None, str | None]:
+    env_config = params.get("env_config") if isinstance(params.get("env_config"), dict) else {}
+    reward_config = env_config.get("reward") if isinstance(env_config.get("reward"), dict) else {}
+    reward_mode = reward_config.get("mode")
+    if reward_mode and reward_mode != "baseline":
+        return "reward.mode", str(reward_mode)
+
+    scenario = env_config.get("scenario")
+    if scenario and scenario != "baseline":
+        return "scenario", str(scenario)
+
+    noise = env_config.get("observation_noise_std")
+    if noise not in (None, 0, 0.0, "0", "0.0"):
+        return "observation_noise_std", str(noise)
+
+    return None, None
+
+
 def _bootstrap_ci(values: list[float], n_boot: int = 5000, alpha: float = 0.05) -> tuple[float, float]:
     if len(values) < 2:
         return (values[0], values[0]) if values else (float("nan"), float("nan"))
@@ -192,6 +210,8 @@ def collect_trials(results_dir: Path) -> list[dict[str, Any]]:
 
         exp_name = trial_dir.parent.name
         p_name, p_val = _sweep_param_from_name(trial_dir.name)
+        if p_name is None:
+            p_name, p_val = _sweep_param_from_params(params)
         algo = params.get("algo_class") or params.get("algorithm") or exp_name.split("_")[0].upper()
         seed = params.get("seed")
         if seed is None:
