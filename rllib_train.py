@@ -399,6 +399,7 @@ def run_tuner(
             param_space=param_space,
             tune_config=tune.TuneConfig(
                 num_samples=samples,
+                max_concurrent_trials=max_concurrent_trials,
                 trial_dirname_creator=short_trial_dirname,
             ),
             run_config=RunConfig(
