@@ -99,6 +99,45 @@ python main.py rllib train --config rllib_configs/ppo_hover.json --steps 1000 --
 python main.py rllib train --config rllib_configs/ppo_hover.json --steps 100000
 ```
 
+### Try shaped hover rewards
+
+The RLlib environment supports optional reward shaping through `env_config.reward`.
+Baseline configs keep the original `HoverAviary` reward unchanged; shaped configs
+add penalties for unstable flight behavior such as high velocity, roll/pitch,
+angular velocity, excessive motor effort, or sudden action changes.
+
+```bash
+# PPO with velocity + attitude + angular-rate penalties
+python main.py rllib train --config rllib_configs/ppo_hover_stable_reward.json --steps 100000
+
+# SAC with the same stable-hover reward
+python main.py rllib train --config rllib_configs/sac_hover_stable_reward.json --steps 100000
+
+# SAC with stable-hover + energy/smoothness penalties and randomized starts
+python main.py rllib train --config rllib_configs/sac_hover_smooth_random_start.json --steps 100000
+
+# Sweep several reward modes in one Ray Tune run
+python main.py rllib train --config rllib_configs/sac_hover_reward_modes.json --steps 100000
+```
+
+Available reward modes:
+
+* `baseline`: original PyBullet hover reward.
+* `position`: original reward plus a distance-to-target penalty.
+* `stable_hover`: original reward plus velocity, roll/pitch, and angular-rate penalties.
+* `energy_aware`: `stable_hover` plus motor effort penalty.
+* `smooth_control`: `energy_aware` plus action-change penalty.
+
+Randomized starts can be enabled with:
+
+```json
+"env_config": {
+  "scenario": "random_start",
+  "initial_position_range": 0.25,
+  "initial_z_range": 0.10
+}
+```
+
 ### Compare all configured algorithms across seeds
 ```bash
 python main.py rllib compare --config-dir rllib_configs --steps 100000 --seeds 0,1,2
