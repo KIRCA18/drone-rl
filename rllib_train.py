@@ -758,11 +758,6 @@ def resume_experiment(
                 _resume_one_trial(trial_dir, stop_metric, stop_steps, checkpoint_frequency)
             return
 
-        # Rebuild the same param_space used originally so Tune can re-resolve
-        # placeholder-referenced objects (e.g. AlgorithmConfig.sample_collector)
-        # baked into the saved trial configs - Tuner.restore() can't resolve
-        # them itself and raises ValueError: `module` (('__ref_ph', ...)) on
-        # any trial it still needs to (re)add to the queue.
         config_for_build = copy.deepcopy(experiment_config)
         if experiment_config.get("sweep"):
             config_for_build = apply_sweep(config_for_build, experiment_config["sweep"])
