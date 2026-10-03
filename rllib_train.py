@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,95 @@ def make_drone_env(env_config: dict[str, Any]):
         initial_xyzs=initial_xyzs,
     )
 
+    class PotentialShapingWrapper(gym.Wrapper):
+        def __init__(self, wrapped_env, scale: float, gamma: float,
+                     action_penalty: float, action_penalty_end: float,
+                     action_penalty_hold_steps: int, action_penalty_decay_steps: int,
+                     velocity_penalty: float, velocity_penalty_end: float,
+                     velocity_penalty_hold_steps: int, velocity_penalty_decay_steps: int):
+            super().__init__(wrapped_env)
+            self.scale = scale
+            self.gamma = gamma
+            self.action_penalty_start = action_penalty
+            self.action_penalty_end = action_penalty_end
+            self.action_penalty_hold = action_penalty_hold_steps
+            self.action_penalty_decay = action_penalty_decay_steps
+            self.velocity_penalty_start = velocity_penalty
+            self.velocity_penalty_end = velocity_penalty_end
+            self.velocity_penalty_hold = velocity_penalty_hold_steps
+            self.velocity_penalty_decay = velocity_penalty_decay_steps
+            self._prev_phi = None
+            self._step_count = 0
+
+        def _phi(self, state) -> float:
+            d = float(np.linalg.norm(self.env.TARGET_POS - state[0:3]))
+            return -self.scale * d
+
+        @staticmethod
+        def _scheduled(step_count: int, start: float, end: float, hold: int, decay: int) -> float:
+            if step_count <= hold:
+                return start
+            if decay <= 0 or step_count >= hold + decay:
+                return end
+            frac = (step_count - hold) / decay
+            return start + (end - start) * frac
+
+        def reset(self, **kwargs):
+            observation, info = self.env.reset(**kwargs)
+            self._prev_phi = self._phi(self.env._getDroneStateVector(0))
+            return observation, info
+
+        def step(self, action):
+            observation, reward, terminated, truncated, info = self.env.step(action)
+            state = self.env._getDroneStateVector(0)
+
+            phi = self._phi(state)
+            potential_term = self.gamma * phi - self._prev_phi
+            self._prev_phi = phi
+
+            action_penalty_now = self._scheduled(
+                self._step_count, self.action_penalty_start, self.action_penalty_end,
+                self.action_penalty_hold, self.action_penalty_decay)
+            velocity_penalty_now = self._scheduled(
+                self._step_count, self.velocity_penalty_start, self.velocity_penalty_end,
+                self.velocity_penalty_hold, self.velocity_penalty_decay)
+            self._step_count += 1
+
+            action_arr = np.asarray(action, dtype=np.float64)
+            action_term = -action_penalty_now * float(np.mean(action_arr ** 2))
+
+            vz = float(state[12])  # vel = state[10:13] = (vx, vy, vz)
+            velocity_term = -velocity_penalty_now * abs(vz)
+
+            shaping = potential_term + action_term + velocity_term
+            info = dict(info)
+            info["base_reward"] = reward
+            info["shaping_reward"] = shaping
+            info["shaping_potential"] = potential_term
+            info["shaping_action"] = action_term
+            info["shaping_velocity"] = velocity_term
+            info["action_penalty_now"] = action_penalty_now
+            info["velocity_penalty_now"] = velocity_penalty_now
+            return observation, reward + shaping, terminated, truncated, info
+
+    reward_shaping = env_config.get("reward_shaping") or {}
+    if bool(reward_shaping.get("enabled", False)):
+        _ap = float(reward_shaping.get("action_penalty", 0.0))
+        _vp = float(reward_shaping.get("velocity_penalty", 0.0))
+        env = PotentialShapingWrapper(
+            env,
+            scale=float(reward_shaping.get("potential_scale", 5.0)),
+            gamma=float(reward_shaping.get("gamma", 0.99)),
+            action_penalty=_ap,
+            action_penalty_end=float(reward_shaping.get("action_penalty_end", _ap)),
+            action_penalty_hold_steps=int(reward_shaping.get("action_penalty_hold_steps", 0)),
+            action_penalty_decay_steps=int(reward_shaping.get("action_penalty_decay_steps", 0)),
+            velocity_penalty=_vp,
+            velocity_penalty_end=float(reward_shaping.get("velocity_penalty_end", _vp)),
+            velocity_penalty_hold_steps=int(reward_shaping.get("velocity_penalty_hold_steps", 0)),
+            velocity_penalty_decay_steps=int(reward_shaping.get("velocity_penalty_decay_steps", 0)),
+        )
+
     class RandomizedStartWrapper(gym.Wrapper):
         def __init__(self, wrapped_env, xy_range: float, z_range: float):
             super().__init__(wrapped_env)
@@ -156,7 +246,7 @@ def make_drone_env(env_config: dict[str, Any]):
             },
         }
 
-        def __init__(self, wrapped_env, config: dict[str, Any]):
+        def __init__(self, wrapped_env, config: dict):
             super().__init__(wrapped_env)
             self.mode = str(config.get("mode", "baseline"))
             weights = copy.deepcopy(self.DEFAULTS.get(self.mode, {}))
@@ -282,6 +372,78 @@ def register_drone_env() -> None:
     register_env(ENV_NAME, make_drone_env)
 
 
+def load_visualization_env_config(config_path: Path | None, algorithm) -> dict[str, Any]:
+    if config_path is not None:
+        return copy.deepcopy(load_experiment_config(config_path).get("env_config", {}))
+
+    algo_config = getattr(algorithm, "config", None)
+    if algo_config is None:
+        return {}
+
+    if isinstance(algo_config, dict):
+        return copy.deepcopy(algo_config.get("env_config", {}))
+
+    return copy.deepcopy(getattr(algo_config, "env_config", {}) or {})
+
+
+def compute_visualization_action(algorithm, observation, explore: bool):
+    try:
+        return algorithm.compute_single_action(observation, explore=explore)
+    except TypeError:
+        result = algorithm.compute_single_action(observation)
+        return result[0] if isinstance(result, tuple) else result
+
+
+def visualize_checkpoint(
+    checkpoint: Path,
+    *,
+    config: Path | None,
+    episodes: int,
+    max_steps: int,
+    sleep: float,
+    explore: bool,
+) -> None:
+    import ray
+    from ray.rllib.algorithms.algorithm import Algorithm
+
+    register_drone_env()
+    ray.init(ignore_reinit_error=True, include_dashboard=False)
+    algorithm = None
+    env = None
+    try:
+        algorithm = Algorithm.from_checkpoint(str(checkpoint))
+        env_config = load_visualization_env_config(config, algorithm)
+        env_config["gui"] = True
+        env = make_drone_env(env_config)
+
+        typer.secho(
+            "Launching RLlib checkpoint in the PyBullet GUI. Press Ctrl+C to stop.",
+            fg=typer.colors.CYAN,
+        )
+        for episode in range(1, episodes + 1):
+            observation, _ = env.reset()
+            episode_return = 0.0
+            for step in range(1, max_steps + 1):
+                action = compute_visualization_action(algorithm, observation, explore)
+                observation, reward, terminated, truncated, _ = env.step(action)
+                episode_return += float(reward)
+                if sleep > 0:
+                    import time
+
+                    time.sleep(sleep)
+                if terminated or truncated:
+                    break
+            typer.echo(f"episode {episode}: return={episode_return:.3f}, steps={step}")
+    except KeyboardInterrupt:
+        typer.echo("\nVisualization stopped by user.")
+    finally:
+        if env is not None:
+            env.close()
+        if algorithm is not None:
+            algorithm.stop()
+        ray.shutdown()
+
+
 def raise_for_failed_trials(result_grid) -> None:
     errors = getattr(result_grid, "errors", [])
     if errors:
@@ -366,6 +528,7 @@ def run_tuner(
     samples: int,
     seed: int | None,
     use_sweep: bool,
+    max_concurrent_trials: int | None = None,
 ):
     import ray
     from ray import tune
@@ -392,7 +555,12 @@ def run_tuner(
     if seed is None and seeds:
         param_space["seed"] = tune.grid_search(list(seeds))
 
-    ray.init(ignore_reinit_error=True, include_dashboard=False)
+    env_vars = {}
+    if max_concurrent_trials:
+        threads_per_trial = max(1, (os.cpu_count() or max_concurrent_trials) // max_concurrent_trials)
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            env_vars[var] = str(threads_per_trial)
+    ray.init(ignore_reinit_error=True, include_dashboard=False, runtime_env={"env_vars": env_vars} if env_vars else None)
     try:
         tuner = tune.Tuner(
             experiment_config["algorithm"].upper(),
@@ -429,6 +597,7 @@ def train(
     seed: int | None = typer.Option(None, "--seed", help="Pin ONE seed (disables the config's multi-seed grid)."),
     seeds: str | None = typer.Option(None, "--seeds", help="Comma-separated seed list, overrides the config's 'seeds' (e.g. --seeds 0,1,2)."),
     use_sweep: bool = typer.Option(True, "--sweep/--no-sweep", help="Enable or disable grid-search sweep values from the config."),
+    max_concurrent_trials: int | None = typer.Option(None, "--max-concurrent-trials", "--max-concurrent", help="Cap how many trials run at once (default: unlimited)."),
 ):
     """Train one RLlib experiment from a JSON config."""
     experiment_config = load_experiment_config(config)
@@ -442,8 +611,33 @@ def train(
         samples=samples,
         seed=seed,
         use_sweep=use_sweep,
+        max_concurrent_trials=max_concurrent_trials,
     )
     typer.secho("RLlib training finished.", fg=typer.colors.GREEN)
+
+
+@app.command()
+def visualize(
+    checkpoint: Path = typer.Option(..., "--checkpoint", "-k", help="Path to an RLlib checkpoint directory."),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Optional experiment JSON config; used for env_config/scenario."),
+    episodes: int = typer.Option(3, "--episodes", "-e", min=1, help="Number of episodes to render."),
+    max_steps: int = typer.Option(2400, "--max-steps", min=1, help="Maximum environment steps per episode."),
+    sleep: float = typer.Option(1.0 / 240.0, "--sleep", min=0.0, help="Seconds to wait between GUI frames."),
+    explore: bool = typer.Option(False, "--explore/--no-explore", help="Use exploratory actions instead of deterministic evaluation actions."),
+):
+    """Render a trained RLlib checkpoint in the PyBullet visualizer."""
+    if not checkpoint.exists():
+        raise typer.BadParameter(f"Checkpoint path does not exist: {checkpoint}")
+    if config is not None and not config.exists():
+        raise typer.BadParameter(f"Config path does not exist: {config}")
+    visualize_checkpoint(
+        checkpoint,
+        config=config,
+        episodes=episodes,
+        max_steps=max_steps,
+        sleep=sleep,
+        explore=explore,
+    )
 
 
 def _latest_checkpoint(trial_dir: Path) -> Path | None:
