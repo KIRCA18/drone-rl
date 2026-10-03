@@ -758,10 +758,25 @@ def resume_experiment(
                 _resume_one_trial(trial_dir, stop_metric, stop_steps, checkpoint_frequency)
             return
 
+        # Rebuild the same param_space used originally so Tune can re-resolve
+        # placeholder-referenced objects (e.g. AlgorithmConfig.sample_collector)
+        # baked into the saved trial configs - Tuner.restore() can't resolve
+        # them itself and raises ValueError: `module` (('__ref_ph', ...)) on
+        # any trial it still needs to (re)add to the queue.
+        config_for_build = copy.deepcopy(experiment_config)
+        if experiment_config.get("sweep"):
+            config_for_build = apply_sweep(config_for_build, experiment_config["sweep"])
+        config_obj = build_rllib_config(config_for_build, None)
+        param_space = config_obj.to_dict()
+        seeds = experiment_config.get("seeds")
+        if seeds:
+            param_space["seed"] = tune.grid_search(list(seeds))
+
         # whole experiment
         tuner = tune.Tuner.restore(
             str(experiment_dir),
             trainable=experiment_config["algorithm"].upper(),
+            param_space=param_space,
             resume_unfinished=True,
             resume_errored=include_errored,
         )

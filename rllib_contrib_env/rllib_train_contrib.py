@@ -729,10 +729,23 @@ def resume(
             for trial_dir in matches:
                 _resume_one_trial(trial_dir, stop_steps, checkpoint_frequency)
         else:
-            config_obj = get_algorithm_config_class(algo_name)()
+            # Rebuild the same param_space used originally so Tune can re-resolve
+            # placeholder-referenced objects baked into the saved trial configs -
+            # Tuner.restore() can't resolve them itself and raises ValueError:
+            # `module` (('__ref_ph', ...)) on any trial it still needs to (re)add.
+            config_for_build = copy.deepcopy(experiment_config)
+            if experiment_config.get("sweep"):
+                config_for_build = apply_sweep(config_for_build, experiment_config["sweep"])
+            config_obj = build_rllib_config(config_for_build, None)
+            param_space = config_obj.to_dict()
+            seeds = experiment_config.get("seeds")
+            if seeds:
+                param_space["seed"] = tune.grid_search(list(seeds))
+
             tuner = tune.Tuner.restore(
                 str(experiment_dir),
                 trainable=config_obj.algo_class,
+                param_space=param_space,
                 resume_unfinished=True,
                 resume_errored=errored,
             )
