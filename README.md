@@ -1,234 +1,191 @@
-<div align="center">
-  <h1>🚁 Drone-RL</h1>
-  <p><strong>A Comparative Analysis of Continuous Control RL Algorithms for Nano-Quadrotors</strong></p>
-  <p><em>Final Project for Agent-Based Systems (FINKI)</em></p>
-  <p><strong>Authors:</strong> 
-    Veronika Ilioska (<a href="https://github.com/veronika-ilioska">GitHub</a> | <a href="https://www.linkedin.com/in/veronika-ilioska-42655a243/">LinkedIn</a>) &
-    Kiril Veljanoski (<a href="https://github.com/KIRCA18">GitHub</a> | <a href="https://www.linkedin.com/in/kiril-veljanoski-1877b9235/">LinkedIn</a>) 
-  </p>
-</div>
+# Drone-RL
 
----
+A comparative study of PPO, SAC, TD3, and DDPG for simulated drone hovering,
+exploring training stability, policy collapse, and reward shaping with Ray RLlib
+and PyBullet.
 
-## 📋 Table of Contents
-* [📌 Project Overview](#-project-overview)
-* [🧪 RLlib Experiment Plan](#-rllib-experiment-plan)
-* [🚀 Installation & Setup](#-installation--setup)
-* [💻 CLI Usage (How to Run)](#-cli-usage-how-to-run)
-* [🧠 RLlib Experiments](#-rllib-experiments)
-* [🔬 TD3 & DDPG (separate environment)](#-td3--ddpg-separate-environment)
+Developed for the Agent-Based Systems course at FINKI by
+[Veronika Ilioska](https://github.com/veronika-ilioska) and
+[Kiril Veljanoski](https://github.com/KIRCA18).
 
----
+## Overview
 
-## 📌 Project Overview
+The agent learns to take off and hover at a fixed target in the
+`gym-pybullet-drones` HoverAviary environment. It receives kinematic observations
+and controls the drone through a single collective motor command (`one_d_rpm`).
 
-> **[🚧 Work in Progress]**
----
+The project includes:
 
-## 🧪 RLlib Experiment Plan
+- PPO and SAC experiments in the main RLlib environment.
+- TD3 and DDPG experiments in a separate compatibility environment.
+- Configuration files for multiple seeds, hyperparameter sweeps, and reward shaping.
+- Checkpoint saving, training resumption, and policy visualization.
+- Result summaries and learning-curve plots.
 
-The comparative experiment design is documented in [RLIB_EXPERIMENT_PLAN.md](RLIB_EXPERIMENT_PLAN.md). It includes algorithm comparisons, scenario/subset comparisons, hyperparameter optimization, neural network architecture combinations, RLlib configuration ideas, and evaluation metrics.
+## Setup
 
----
+Clone the repository, then create and activate a virtual environment:
 
-## 🚀 Installation & Setup
-
-### 1. Clone the Repository
-```bash
+```powershell
 git clone https://github.com/KIRCA18/drone-rl.git
 cd drone-rl
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-### 2. Install Core Dependencies
-Install the required packages, including `typer` for the CLI, Ray RLlib, and PyBullet:
-```bash
-pip install -r requirements.txt
+On Linux or macOS, activate the environment with `source .venv/bin/activate`.
+
+## Training
+
+RLlib experiments are defined in [rllib_configs](rllib_configs). Each file
+specifies the algorithm, environment, training parameters, evaluation settings,
+and any seed or hyperparameter sweep.
+
+Run one short PPO trial:
+
+```powershell
+python main.py rllib train --config rllib_configs/ppo_hover.json --steps 4000 --seed 0 --no-sweep
 ```
 
+Train SAC using the budget and seeds in its configuration:
 
----
-
-## 💻 CLI Usage (How to Run)
-
-This project features a fully automated Command Line Interface (CLI) built with `typer`. You can view the complete help menu at any time by running:
-```bash
-python main.py --help
+```powershell
+python main.py rllib train --config rllib_configs/sac_hover.json
 ```
 
-### 🎯 1. Train a Policy
-Trains an agent on your CPU without opening a visualizer. By default, it automatically optimizes parallel environment workers (`n_envs=4` for PPO, `n_envs=1` for SAC/TD3) to prevent CPU bottlenecks.
-```bash
-# Default: Train PPO for 1,000,000 steps
-python main.py train
+Limit the number of concurrent trials when running multiple seeds or a sweep:
 
-# Train SAC for 500,000 steps with a custom output name
-python main.py train --algo SAC --steps 500000 --output models/sac_hover_v1
+```powershell
+python main.py rllib train --config rllib_configs/sac_hover_reward_modes.json --max-concurrent-trials 2
 ```
 
-### 👁️ 2. Render a Saved Model
-Loads a saved model from disk and launches the PyBullet 3D visual interface so you can watch the learned policy in action.
-```bash
-# Render the model you just trained
-python main.py render --algo SAC --model models/sac_hover_v1
+Resume an interrupted experiment using its original configuration:
+
+```powershell
+python main.py rllib resume --config rllib_configs/sac_hover.json
 ```
 
-### ⚡ 3. Train and Immediately Render
-Runs a training session and immediately launches the PyBullet visualizer upon completion. Perfect for quick testing.
-```bash
-# Run a quick 100k-step test with TD3
-python main.py train-and-render --algo TD3 --steps 100000
+Use `python main.py rllib --help` to see the available commands. The `batch`
+command runs every configuration in a selected directory; use a directory of
+PPO/SAC configurations with the main environment and the separate runner below
+for TD3/DDPG.
+
+## Reward Shaping
+
+Baseline configurations use the original HoverAviary reward. The
+`env_config.reward` setting supports additional penalties:
+
+| Mode | Additional penalties |
+| --- | --- |
+| `baseline` | None |
+| `position` | Distance to the target |
+| `stable_hover` | Linear velocity, roll/pitch, and angular velocity |
+| `energy_aware` | Stability terms and action magnitude |
+| `smooth_control` | Stability terms, action magnitude, and action changes |
+
+The action-magnitude term is a control-effort proxy, not a measurement of battery
+consumption. Returns from different reward functions should be evaluated on a
+common reward before being compared directly.
+
+Run all four shaped SAC reward modes:
+
+```powershell
+python main.py rllib train --config rllib_configs/sac_hover_reward_modes.json
 ```
 
----
+Train with randomized starting positions and a smooth-control reward:
 
-## 🧠 RLlib Experiments
-
-The project includes a Ray RLlib implementation for algorithm comparison, scenario comparison, hyperparameter sweeps, and result analysis.
-
-You can run RLlib through the main CLI:
-```bash
-python main.py rllib --help
+```powershell
+python main.py rllib train --config rllib_configs/sac_hover_smooth_random_start.json
 ```
 
-### Train one RLlib experiment
-```bash
-# Quick smoke test
-python main.py rllib train --config rllib_configs/ppo_hover.json --steps 1000 --no-sweep
+TD3/DDPG configurations also support potential-based progress shaping through
+`env_config.reward_shaping`. The shaped-v2 variants add action-magnitude and
+vertical-velocity penalties; shaped-v3 gradually reduces those penalties during
+training.
 
-# Longer PPO training run
-python main.py rllib train --config rllib_configs/ppo_hover.json --steps 100000
-```
+## Results and Evaluation
 
-### Try shaped hover rewards
+Summarize saved RLlib results from the main environment:
 
-The RLlib environment supports optional reward shaping through `env_config.reward`.
-Baseline configs keep the original `HoverAviary` reward unchanged; shaped configs
-add penalties for unstable flight behavior such as high velocity, roll/pitch,
-angular velocity, excessive motor effort, or sudden action changes.
-
-```bash
-# PPO with velocity + attitude + angular-rate penalties
-python main.py rllib train --config rllib_configs/ppo_hover_stable_reward.json --steps 100000
-
-# SAC with the same stable-hover reward
-python main.py rllib train --config rllib_configs/sac_hover_stable_reward.json --steps 100000
-
-# SAC with stable-hover + energy/smoothness penalties and randomized starts
-python main.py rllib train --config rllib_configs/sac_hover_smooth_random_start.json --steps 100000
-
-# Sweep several reward modes in one Ray Tune run
-python main.py rllib train --config rllib_configs/sac_hover_reward_modes.json --steps 100000
-```
-
-Available reward modes:
-
-* `baseline`: original PyBullet hover reward.
-* `position`: original reward plus a distance-to-target penalty.
-* `stable_hover`: original reward plus velocity, roll/pitch, and angular-rate penalties.
-* `energy_aware`: `stable_hover` plus motor effort penalty.
-* `smooth_control`: `energy_aware` plus action-change penalty.
-
-Randomized starts can be enabled with:
-
-```json
-"env_config": {
-  "scenario": "random_start",
-  "initial_position_range": 0.25,
-  "initial_z_range": 0.10
-}
-```
-
-### Compare all configured algorithms across seeds
-```bash
-python main.py rllib compare --config-dir rllib_configs --steps 100000 --seeds 0,1,2
-```
-
-### Analyze Ray Tune results
-```bash
+```powershell
 python main.py rllib-results summarize
 ```
 
-Outputs are written to:
+The command writes timestamped outputs to:
 
-* `experiments/results/`
-* `experiments/plots/`
-* `reports/algorithm_comparison.md`
+- `experiments/results/`: per-trial CSV summaries alongside training logs and checkpoints.
+- `experiments/plots/`: learning-curve plots.
+- `reports/`: Markdown comparison reports.
 
-### Visualize an RLlib checkpoint
+The summary plot displays the top 10 trials by default. The CSV and Markdown
+report include all trials with usable return data. Evaluation returns are
+preferred; training returns are used when no evaluation measurements are logged.
 
-After training, point the visualizer at a Ray Tune checkpoint directory to watch
-the policy in the PyBullet GUI:
+## Visualizing a Policy
 
-```bash
-python main.py rllib visualize \
-  --checkpoint experiments/results/ppo_hover/PPO_DroneHover-v0_.../checkpoint_000010 \
-  --config rllib_configs/ppo_hover.json
+Replace `PATH_TO_CHECKPOINT` with a saved Ray Tune checkpoint directory:
+
+```powershell
+python main.py rllib visualize --checkpoint PATH_TO_CHECKPOINT --config rllib_configs/sac_hover.json --episodes 1 --no-explore
 ```
 
-Useful options:
+The visualizer opens the PyBullet GUI. Use the configuration corresponding to
+the saved policy.
 
-```bash
-python main.py rllib visualize --help
-python main.py rllib visualize --checkpoint PATH --episodes 1 --max-steps 1000 --no-explore
+## TD3 and DDPG
+
+These algorithms use the vendored `rllib_contrib` implementation and a separate
+Python 3.10 environment with Ray 2.5.1. The main environment uses Ray 2.58.0.
+See [third-party attribution](rllib_contrib_env/README.md) for the source and
+license of the vendored code.
+
+Create the compatibility environment from the repository root:
+
+```powershell
+py -3.10 -m venv rllib_contrib_env/.venv
+.\rllib_contrib_env\.venv\Scripts\Activate.ps1
+python -m pip install -r rllib_contrib_env/requirements.txt
+python -m pip install --no-deps "git+https://github.com/utiasDSL/gym-pybullet-drones.git@df831ee8f6fd9cd823f3ecdfa1474a4ddcd40771#egg=gym_pybullet_drones"
 ```
 
----
+On Linux or macOS, use `python3.10` to create the environment and
+`source rllib_contrib_env/.venv/bin/activate` to activate it. The simulator commit
+above differs from the main requirements file; align simulator versions when
+setting up a controlled comparison.
 
-## 🔬 TD3 & DDPG (separate environment)
+If the simulator reports `ModuleNotFoundError: No module named 'pkg_resources'`,
+install `setuptools<81` in this environment.
 
-Ray removed TD3 and DDPG from `ray.rllib.algorithms` — they only survive as the
-archived `rllib_contrib` packages, which are hard-pinned to `ray[rllib]==2.5.x`
-and **Python < 3.11**. That cannot share the main virtualenv (`ray[rllib]==2.58`,
-`gymnasium>=1.0`), so TD3/DDPG run from a second, isolated environment in
-`rllib_contrib_env/`. The algorithm source is vendored under
-`rllib_contrib_env/vendor/` (see `rllib_contrib_env/README.md` for attribution —
-it is copied verbatim from `ray-project/ray` at tag `ray-2.9.0`, Apache-2.0).
+Run experiments from the contrib directory:
 
-### 1. Create the environment (Python 3.10)
-
-```bash
-# from the repo root — needs a Python 3.10 interpreter
-python3.10 -m venv rllib_contrib_env/.venv          # Windows: py -3.10 -m venv rllib_contrib_env\.venv
-
-# activate it
-source rllib_contrib_env/.venv/bin/activate         # Windows: rllib_contrib_env\.venv\Scripts\activate
-
-pip install -r rllib_contrib_env/requirements.txt
-
-# gym-pybullet-drones, pinned to the SAME commit the main env uses, installed
-# with --no-deps so pip doesn't fail on the older gymnasium pin:
-pip install --no-deps "git+https://github.com/utiasDSL/gym-pybullet-drones.git@df831ee8f6fd9cd823f3ecdfa1474a4ddcd40771#egg=gym_pybullet_drones"
-```
-
-If `import gym_pybullet_drones` later fails with
-`ModuleNotFoundError: No module named 'pkg_resources'`, run
-`pip install "setuptools<81"` in this venv.
-
-### 2. Run the configs
-
-Run from inside `rllib_contrib_env/`, using the shared configs in `../rllib_configs/`:
-
-```bash
+```powershell
 cd rllib_contrib_env
-
-# smoke test
-python rllib_train_contrib.py train --config ../rllib_configs/td3_hover.json --steps 4000 --no-sweep --seeds 0
-
-# a sweep (3 values x 5 seeds), short budget
-python rllib_train_contrib.py train --config ../rllib_configs/td3_hover_gamma.json  --steps 150000
-python rllib_train_contrib.py train --config ../rllib_configs/ddpg_hover_gamma.json --steps 150000
+python rllib_train_contrib.py train --config ../rllib_configs/td3_hover.json --steps 4000 --no-sweep --seed 0
+python rllib_train_contrib.py train --config ../rllib_configs/td3_hover_shaped_v2.json
+python rllib_train_contrib.py train --config ../rllib_configs/ddpg_hover_shaped_v2.json
 ```
 
-Results land in `../experiments/results/` — the same tree PPO/SAC use — so
-`python main.py rllib-results summarize` (run from the **main** environment)
-picks them up alongside everything else.
+Visualize a saved TD3 policy:
 
-To visualize a TD3/DDPG checkpoint, run the contrib visualizer from inside the
-dedicated environment:
-
-```bash
-cd rllib_contrib_env
-python rllib_train_contrib.py visualize \
-  --checkpoint ../experiments/results/td3_hover/TD3_DroneHover-v0_.../checkpoint_000010 \
-  --config ../rllib_configs/td3_hover.json
+```powershell
+python rllib_train_contrib.py visualize --checkpoint PATH_TO_CHECKPOINT --config ../rllib_configs/td3_hover_shaped_v2.json
 ```
+
+Results are saved in the shared `experiments/results/` directory. Switch back to
+the main environment and repository root to run the summary command.
+
+## Stable-Baselines3 Interface
+
+The project also provides a simpler training and rendering interface for PPO,
+SAC, and TD3:
+
+```powershell
+python main.py train --algo SAC --steps 500000 --output models/sac_hover_v1
+python main.py render --algo SAC --model models/sac_hover_v1
+python main.py train-and-render --algo TD3 --steps 100000
+```
+
+This interface saves Stable-Baselines3 models separately from RLlib checkpoints.
+Use `python main.py --help` for all available options.
